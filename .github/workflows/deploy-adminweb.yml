@@ -361,18 +361,38 @@ jobs:
             echo "ERROR: wrangler did not return a deployment URL."
             exit 1
           fi
-          HEALTH_URL="${DEPLOYMENT_URL%/}/api/health"
-          echo "Testing: $HEALTH_URL"
+
+          # The per-deployment URL is <hash>.<project>.pages.dev — a 4-label host
+          # that the Cloudflare '*.pages.dev' wildcard cert does NOT cover, so
+          # curling it fails the TLS handshake. Build cert-valid candidates and
+          # test those instead: the project alias (<project>.pages.dev, which
+          # serves the latest production deployment) and the custom domain.
+          HOST="$(printf '%s' "$DEPLOYMENT_URL" | sed -E 's#^https?://##; s#/.*$##')"
+          DOTS="$(printf '%s' "$HOST" | tr -cd '.' | wc -c)"
+          CANDIDATES=""
+          if [ "$DOTS" -ge 3 ]; then
+            # Strip the leading <hash> label -> <project>.pages.dev (cert-valid).
+            ALIAS_HOST="$(printf '%s' "$HOST" | sed -E 's#^[^.]+\.##')"
+            CANDIDATES="https://${ALIAS_HOST}"
+          else
+            CANDIDATES="https://${HOST}"
+          fi
+          if [ -n "${CF_PAGES_CUSTOM_DOMAIN:-}" ]; then
+            CANDIDATES="$CANDIDATES https://${CF_PAGES_CUSTOM_DOMAIN}"
+          fi
+          echo "Health-check candidates: $CANDIDATES"
 
           for i in 1 2 3 4 5 6; do
-            HTTP_CODE=$(curl -sS -o response.json -w "%{http_code}" "$HEALTH_URL" || true)
-            RESPONSE=$(cat response.json 2>/dev/null || true)
-            echo "Attempt $i: HTTP $HTTP_CODE"
-            echo "Response: $RESPONSE"
-
-            if [ "$HTTP_CODE" = "200" ] && echo "$RESPONSE" | grep -q '"ok":true'; then
-              exit 0
-            fi
+            for BASE in $CANDIDATES; do
+              HEALTH_URL="${BASE%/}/api/health"
+              HTTP_CODE=$(curl -sS -o response.json -w "%{http_code}" "$HEALTH_URL" || true)
+              RESPONSE=$(cat response.json 2>/dev/null || true)
+              echo "Attempt $i: $HEALTH_URL -> HTTP $HTTP_CODE"
+              echo "Response: $RESPONSE"
+              if [ "$HTTP_CODE" = "200" ] && echo "$RESPONSE" | grep -q '"ok":true'; then
+                exit 0
+              fi
+            done
             sleep 10
           done
 
