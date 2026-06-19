@@ -7,6 +7,20 @@
 # Secrets are synced into Cloudflare Pages before each deploy and are available
 # only to Pages Functions via context.env. They are never injected into the SPA.
 #
+# PRODUCTION PROMOTION MODEL
+# --------------------------
+# The custom domain (global-mails.buzzle.dev) only ever serves the Pages
+# *production* deployment, i.e. the latest deployment whose Wrangler --branch
+# equals the project's configured production branch. Passing the raw source
+# branch (github.ref_name) made every release/* — and any non-default branch —
+# a *preview* deployment, so the custom domain stayed frozen on an old build.
+#
+# This workflow therefore ALWAYS deploys with --branch=<canonical production
+# branch> (default: staging). Both `staging` and `release/**` pushes promote the
+# newest AdminWeb build to the production environment of the SAME Pages project,
+# and the real source branch + commit SHA are preserved in the deployment
+# metadata and logs.
+#
 # Required GitHub repository secrets:
 #   CLOUDFLARE_API_TOKEN                  - Cloudflare API token with Pages:Edit
 #   CLOUDFLARE_ACCOUNT_ID                 - Cloudflare account ID
@@ -14,15 +28,13 @@
 #   UNITY_PROJECT_SERVICE_ACCOUNT_SECRET  - UGS service-account secret
 #   ADMIN_PROXY_TOKEN                     - Gate token the SPA presents as Bearer
 #
-# Optional GitHub repository variables:
-#   CLOUDFLARE_PAGES_PROJECT              - Existing Pages project name, e.g. adminweb-fza
-#   CLOUDFLARE_PAGES_CUSTOM_DOMAIN        - Custom domain to attach, e.g. admin.archergame.mobi
+# Required GitHub repository variables (validated, no auto-selection):
+#   CLOUDFLARE_PAGES_PROJECT          = adminweb-fza
+#   CLOUDFLARE_PAGES_CUSTOM_DOMAIN    = global-mails.buzzle.dev
 #
-# If CLOUDFLARE_PAGES_PROJECT is unset, the workflow auto-selects a Pages
-# project only when the account has exactly one AdminWeb-looking project.
-#
-# If CLOUDFLARE_PAGES_CUSTOM_DOMAIN is set, the workflow attaches that domain
-# to the Pages project on every deploy (idempotent — safe to re-run).
+# Optional GitHub repository variable:
+#   CLOUDFLARE_PAGES_PRODUCTION_BRANCH - Canonical Pages production branch.
+#                                        Defaults to `staging` when unset.
 
 name: Deploy AdminWeb to Cloudflare Pages
 
@@ -30,18 +42,19 @@ on:
   push:
     branches:
       - staging
-      - "release/*"
-    paths:
-      - "AdminWeb/**"
-      - ".github/workflows/deploy-adminweb.yml"
+      - "release/**"
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# One GLOBAL production concurrency group. staging and release/** deployments
+# target the same production environment, so they must never run concurrently.
+# cancel-in-progress is false: let an in-flight production deploy finish rather
+# than abort it half-way; the newest queued run promotes last and wins.
 concurrency:
-  group: adminweb-pages-${{ github.ref_name }}
-  cancel-in-progress: true
+  group: adminweb-pages-production
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -70,75 +83,93 @@ jobs:
           VITE_BASE: /
         run: npm run build
 
-      - name: Resolve Cloudflare Pages project
-        working-directory: AdminWeb
+      # ------------------------------------------------------------------
+      # Validate configuration. No auto-selection: the Pages project and
+      # custom domain are pinned via required repo variables and must match
+      # the expected values exactly, or the deploy fails early.
+      # ------------------------------------------------------------------
+      - name: Validate configuration
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT }}
+          CLOUDFLARE_PAGES_CUSTOM_DOMAIN: ${{ vars.CLOUDFLARE_PAGES_CUSTOM_DOMAIN }}
+          CLOUDFLARE_PAGES_PRODUCTION_BRANCH: ${{ vars.CLOUDFLARE_PAGES_PRODUCTION_BRANCH }}
         run: |
-          set -e
-          node <<'NODE'
-          ;(async () => {
-          const fs = require('fs')
+          set -euo pipefail
 
-          const token = process.env.CLOUDFLARE_API_TOKEN
-          const accountId = process.env.CLOUDFLARE_ACCOUNT_ID
-          const configured = (process.env.CLOUDFLARE_PAGES_PROJECT || '').trim()
+          # Expected (canonical) values. The repo variables must match these.
+          EXPECTED_PROJECT="adminweb-fza"
+          EXPECTED_DOMAIN="global-mails.buzzle.dev"
+          DEFAULT_PRODUCTION_BRANCH="staging"
 
-          if (!token || !accountId) {
-            console.error('Missing CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID.')
-            process.exit(1)
-          }
+          fail=0
 
-          const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/pages/projects`, {
-            headers: { Authorization: `Bearer ${token}` },
-          })
-          const json = await res.json()
-          if (!res.ok || !json.success) {
-            console.error('Failed to list Cloudflare Pages projects.')
-            console.error(JSON.stringify(json, null, 2))
-            process.exit(1)
-          }
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "ERROR: secret CLOUDFLARE_API_TOKEN is missing."
+            fail=1
+          fi
+          if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "ERROR: secret CLOUDFLARE_ACCOUNT_ID is missing."
+            fail=1
+          fi
 
-          const projects = Array.isArray(json.result) ? json.result : []
-          const names = projects.map((p) => p.name).filter(Boolean)
-          const adminwebNames = names.filter((name) => /^adminweb($|-)/.test(name))
+          PROJECT="$(printf '%s' "${CLOUDFLARE_PAGES_PROJECT:-}" | tr -d '[:space:]')"
+          DOMAIN="$(printf '%s' "${CLOUDFLARE_PAGES_CUSTOM_DOMAIN:-}" | tr -d '[:space:]')"
+          PROD_BRANCH="$(printf '%s' "${CLOUDFLARE_PAGES_PRODUCTION_BRANCH:-}" | tr -d '[:space:]')"
+          [ -n "$PROD_BRANCH" ] || PROD_BRANCH="$DEFAULT_PRODUCTION_BRANCH"
 
-          let projectName = configured
-          if (!projectName) {
-            if (adminwebNames.length === 1) {
-              projectName = adminwebNames[0]
-            } else if (names.length === 1) {
-              projectName = names[0]
-            } else if (adminwebNames.length === 0 && names.length === 0) {
-              projectName = 'adminweb'
-            } else {
-              console.error('Cannot auto-select Cloudflare Pages project.')
-              console.error(`Projects found: ${names.join(', ') || '(none)'}`)
-              console.error('Set GitHub repo variable CLOUDFLARE_PAGES_PROJECT to the existing project name, e.g. adminweb-fza.')
-              process.exit(1)
-            }
-          }
+          if [ -z "$PROJECT" ]; then
+            echo "ERROR: repo variable CLOUDFLARE_PAGES_PROJECT is missing."
+            echo "       Set it to '$EXPECTED_PROJECT' (Settings > Secrets and variables > Actions > Variables)."
+            fail=1
+          elif [ "$PROJECT" != "$EXPECTED_PROJECT" ]; then
+            echo "ERROR: CLOUDFLARE_PAGES_PROJECT='$PROJECT' is unexpected (expected '$EXPECTED_PROJECT')."
+            echo "       Refusing to deploy to an unverified Pages project."
+            fail=1
+          fi
 
-          fs.appendFileSync(process.env.GITHUB_ENV, `CF_PAGES_PROJECT=${projectName}\n`)
-          console.log(`Using Cloudflare Pages project: ${projectName}`)
-          })().catch((err) => {
-            console.error(err)
-            process.exit(1)
-          })
-          NODE
+          if [ -z "$DOMAIN" ]; then
+            echo "ERROR: repo variable CLOUDFLARE_PAGES_CUSTOM_DOMAIN is missing."
+            echo "       Set it to '$EXPECTED_DOMAIN'."
+            fail=1
+          elif [ "$DOMAIN" != "$EXPECTED_DOMAIN" ]; then
+            echo "ERROR: CLOUDFLARE_PAGES_CUSTOM_DOMAIN='$DOMAIN' is unexpected (expected '$EXPECTED_DOMAIN')."
+            fail=1
+          fi
 
+          if [ "$fail" -ne 0 ]; then
+            echo "Configuration validation failed. See errors above."
+            exit 1
+          fi
+
+          {
+            echo "CF_PAGES_PROJECT=$PROJECT"
+            echo "CF_PAGES_CUSTOM_DOMAIN=$DOMAIN"
+            echo "CF_PAGES_PRODUCTION_BRANCH=$PROD_BRANCH"
+          } >> "$GITHUB_ENV"
+
+          echo "Pages project:      $PROJECT"
+          echo "Custom domain:      $DOMAIN"
+          echo "Production branch:   $PROD_BRANCH"
+          echo "Source branch:       ${GITHUB_REF_NAME}"
+
+      # ------------------------------------------------------------------
+      # Ensure the project exists. For a brand-new project the production
+      # branch is set at creation; for an existing project it is reconciled
+      # in the next step (create's --production-branch does not repair it).
+      # ------------------------------------------------------------------
       - name: Ensure Cloudflare Pages project
         working-directory: AdminWeb
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          set -e
+          set -euo pipefail
           echo "Ensuring Cloudflare Pages project '$CF_PAGES_PROJECT' exists."
           set +e
-          npx wrangler@3.65.0 pages project create "$CF_PAGES_PROJECT" --production-branch=staging > create-project.log 2>&1
+          npx wrangler@3.65.0 pages project create "$CF_PAGES_PROJECT" \
+            --production-branch="$CF_PAGES_PRODUCTION_BRANCH" > create-project.log 2>&1
           CREATE_EXIT=$?
           set -e
 
@@ -152,65 +183,139 @@ jobs:
             exit "$CREATE_EXIT"
           fi
 
-      - name: Attach custom domain
+      # ------------------------------------------------------------------
+      # Reconcile the production branch of the EXISTING project via the
+      # Cloudflare API. This is what actually repairs a project whose
+      # production branch drifted (the root cause of the stale custom domain).
+      # ------------------------------------------------------------------
+      - name: Reconcile Pages production branch
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_PAGES_CUSTOM_DOMAIN: ${{ vars.CLOUDFLARE_PAGES_CUSTOM_DOMAIN }}
         run: |
-          set -e
+          set -euo pipefail
           node <<'NODE'
           ;(async () => {
-            const fs = require('fs')
-            const customDomain = (process.env.CLOUDFLARE_PAGES_CUSTOM_DOMAIN || '').trim()
-            if (!customDomain) {
-              console.log('CLOUDFLARE_PAGES_CUSTOM_DOMAIN not set — skipping custom domain attachment.')
-              return
-            }
-
             const token = process.env.CLOUDFLARE_API_TOKEN
             const accountId = process.env.CLOUDFLARE_ACCOUNT_ID
             const project = process.env.CF_PAGES_PROJECT
+            const wanted = process.env.CF_PAGES_PRODUCTION_BRANCH
+
+            const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/pages/projects/${project}`
+            const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+
+            const getRes = await fetch(base, { headers })
+            const getJson = await getRes.json()
+            if (!getRes.ok || !getJson.success) {
+              console.error(`Failed to read Pages project '${project}'.`)
+              console.error(JSON.stringify(getJson.errors || getJson, null, 2))
+              process.exit(1)
+            }
+
+            const current = getJson.result && getJson.result.production_branch
+            console.log(`Current production branch: ${current}`)
+            console.log(`Desired production branch: ${wanted}`)
+
+            if (current === wanted) {
+              console.log('Production branch already correct — no change.')
+              return
+            }
+
+            console.log(`Updating production branch '${current}' -> '${wanted}'.`)
+            const patchRes = await fetch(base, {
+              method: 'PATCH',
+              headers,
+              body: JSON.stringify({ production_branch: wanted }),
+            })
+            const patchJson = await patchRes.json()
+            if (!patchRes.ok || !patchJson.success) {
+              console.error('ERROR: failed to update the Pages production branch via the Cloudflare API.')
+              console.error(JSON.stringify(patchJson.errors || patchJson, null, 2))
+              console.error('')
+              console.error('Remediation: open Cloudflare dashboard > Workers & Pages >')
+              console.error(`  ${project} > Settings > Builds & deployments and set the`)
+              console.error(`  Production branch to '${wanted}', then re-run this workflow.`)
+              process.exit(1)
+            }
+
+            const updated = patchJson.result && patchJson.result.production_branch
+            if (updated !== wanted) {
+              console.error(`ERROR: production branch is '${updated}' after update, expected '${wanted}'.`)
+              process.exit(1)
+            }
+            console.log(`Production branch is now '${updated}'.`)
+          })().catch((err) => { console.error(err); process.exit(1) })
+          NODE
+
+      # ------------------------------------------------------------------
+      # Attach the custom domain (idempotent) and VERIFY it belongs to this
+      # project. A domain attached to a different project would silently
+      # serve the wrong build, so a missing domain after attach is fatal.
+      # ------------------------------------------------------------------
+      - name: Attach and verify custom domain
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          ;(async () => {
+            const token = process.env.CLOUDFLARE_API_TOKEN
+            const accountId = process.env.CLOUDFLARE_ACCOUNT_ID
+            const project = process.env.CF_PAGES_PROJECT
+            const customDomain = process.env.CF_PAGES_CUSTOM_DOMAIN
 
             const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}/pages/projects/${project}/domains`
             const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
 
-            // Check if already attached
-            const listRes = await fetch(base, { headers })
-            const listJson = await listRes.json()
-            const existing = Array.isArray(listJson.result) ? listJson.result.map(d => d.name) : []
-            if (existing.includes(customDomain)) {
-              console.log(`Custom domain '${customDomain}' already attached to '${project}'.`)
-              fs.appendFileSync(process.env.GITHUB_ENV, `CUSTOM_DOMAIN=${customDomain}\n`)
-              return
+            const listDomains = async () => {
+              const res = await fetch(base, { headers })
+              const json = await res.json()
+              if (!res.ok || !json.success) {
+                console.error(`Failed to list domains for project '${project}'.`)
+                console.error(JSON.stringify(json.errors || json, null, 2))
+                process.exit(1)
+              }
+              return Array.isArray(json.result) ? json.result.map((d) => d.name) : []
             }
 
-            console.log(`Attaching custom domain '${customDomain}' to Pages project '${project}'.`)
-            const addRes = await fetch(base, {
-              method: 'POST',
-              headers,
-              body: JSON.stringify({ name: customDomain }),
-            })
-            const addJson = await addRes.json()
-
-            if (!addRes.ok || !addJson.success) {
-              const errors = addJson.errors || []
-              const alreadyExists = errors.some(e => /already (exists|in use)/i.test(e.message || ''))
-              if (alreadyExists) {
-                console.log(`Custom domain '${customDomain}' already attached (confirmed via API error).`)
-                fs.appendFileSync(process.env.GITHUB_ENV, `CUSTOM_DOMAIN=${customDomain}\n`)
-                return
+            let domains = await listDomains()
+            if (!domains.includes(customDomain)) {
+              console.log(`Attaching custom domain '${customDomain}' to '${project}'.`)
+              const addRes = await fetch(base, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ name: customDomain }),
+              })
+              const addJson = await addRes.json()
+              const alreadyInUse =
+                (addJson.errors || []).some((e) => /already (exists|in use)/i.test(e.message || ''))
+              if ((!addRes.ok || !addJson.success) && !alreadyInUse) {
+                console.error('Failed to attach custom domain.')
+                console.error(JSON.stringify(addJson.errors || addJson, null, 2))
+                process.exit(1)
               }
-              console.error('Failed to attach custom domain.')
-              console.error(JSON.stringify(addJson, null, 2))
+              domains = await listDomains()
+            } else {
+              console.log(`Custom domain '${customDomain}' already attached to '${project}'.`)
+            }
+
+            // Verification: the domain MUST belong to this project now.
+            if (!domains.includes(customDomain)) {
+              console.error(`ERROR: custom domain '${customDomain}' is not attached to project '${project}'.`)
+              console.error('It may be bound to a different Pages project. Detach it there first,')
+              console.error(`then re-run so it can be attached to '${project}'.`)
               process.exit(1)
             }
-
-            console.log(`Custom domain '${customDomain}' attached successfully.`)
-            fs.appendFileSync(process.env.GITHUB_ENV, `CUSTOM_DOMAIN=${customDomain}\n`)
+            console.log(`Verified: '${customDomain}' belongs to project '${project}'.`)
           })().catch((err) => { console.error(err); process.exit(1) })
           NODE
 
+      # ------------------------------------------------------------------
+      # Sync secrets to BOTH the production and preview environments so the
+      # custom domain (production) and any *.pages.dev preview behave the same.
+      # Secret values are written to a temp file and never echoed.
+      # ------------------------------------------------------------------
       - name: Sync Pages secrets
         working-directory: AdminWeb
         env:
@@ -220,12 +325,17 @@ jobs:
           UNITY_PROJECT_SERVICE_ACCOUNT_SECRET: ${{ secrets.UNITY_PROJECT_SERVICE_ACCOUNT_SECRET }}
           ADMIN_PROXY_TOKEN: ${{ secrets.ADMIN_PROXY_TOKEN }}
         run: |
-          set -e
+          set -euo pipefail
           node -e "const fs=require('fs'); const keys=['UNITY_PROJECT_SERVICE_ACCOUNT_KEY','UNITY_PROJECT_SERVICE_ACCOUNT_SECRET','ADMIN_PROXY_TOKEN']; const out=Object.fromEntries(keys.map(k=>[k,process.env[k]||''])); for (const [k,v] of Object.entries(out)) { if (!v) { console.error('Missing secret: '+k); process.exit(1); } } fs.writeFileSync('.pages-secrets.json', JSON.stringify(out));"
+          trap 'rm -f .pages-secrets.json' EXIT
           npx wrangler@3.65.0 pages secret bulk .pages-secrets.json --project-name="$CF_PAGES_PROJECT" --env=production
           npx wrangler@3.65.0 pages secret bulk .pages-secrets.json --project-name="$CF_PAGES_PROJECT" --env=preview
-          rm .pages-secrets.json
 
+      # ------------------------------------------------------------------
+      # Deploy. ALWAYS use the canonical production branch so Cloudflare
+      # treats this as a production deployment and promotes it to the custom
+      # domain. The real source branch + SHA live in the deployment metadata.
+      # ------------------------------------------------------------------
       - name: Deploy SPA and API to Cloudflare Pages
         id: deploy-pages
         working-directory: AdminWeb
@@ -233,21 +343,25 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          set -e
-          npx wrangler@3.65.0 pages deploy dist --project-name="$CF_PAGES_PROJECT" --branch="${{ github.ref_name }}" 2>&1 | tee deploy.log
+          set -euo pipefail
+          npx wrangler@3.65.0 pages deploy dist \
+            --project-name="$CF_PAGES_PROJECT" \
+            --branch="$CF_PAGES_PRODUCTION_BRANCH" \
+            --commit-hash="${GITHUB_SHA}" \
+            --commit-message="Deploy ${GITHUB_REF_NAME} (${GITHUB_SHA}) to production" \
+            2>&1 | tee deploy.log
           DEPLOYMENT_URL=$(node -e "const fs=require('fs'); const text=fs.readFileSync('deploy.log','utf8'); const urls=[...text.matchAll(/https:\\/\\/[^\\s]+/g)].map(m=>m[0].replace(/[),.]+$/,'')); const picked=urls.find(u=>u.includes('.pages.dev')) || urls[0] || ''; if (!picked) process.exit(1); console.log(picked)")
           echo "DEPLOYMENT_URL=$DEPLOYMENT_URL" >> "$GITHUB_ENV"
           echo "deployment-url=$DEPLOYMENT_URL" >> "$GITHUB_OUTPUT"
 
       - name: Smoke test same-origin API
         run: |
-          set -e
-          if [ -z "$DEPLOYMENT_URL" ]; then
-            echo "ERROR: wrangler-action did not return deployment-url."
+          set -euo pipefail
+          if [ -z "${DEPLOYMENT_URL:-}" ]; then
+            echo "ERROR: wrangler did not return a deployment URL."
             exit 1
           fi
-          BASE_URL="$DEPLOYMENT_URL"
-          HEALTH_URL="${BASE_URL%/}/api/health"
+          HEALTH_URL="${DEPLOYMENT_URL%/}/api/health"
           echo "Testing: $HEALTH_URL"
 
           for i in 1 2 3 4 5 6; do
@@ -259,7 +373,6 @@ jobs:
             if [ "$HTTP_CODE" = "200" ] && echo "$RESPONSE" | grep -q '"ok":true'; then
               exit 0
             fi
-
             sleep 10
           done
 
@@ -278,11 +391,10 @@ jobs:
             echo "| Field | Value |"
             echo "|---|---|"
             echo "| **Pages URL** | $PAGES_URL |"
-            if [ -n "$CUSTOM_DOMAIN" ]; then
-              echo "| **Custom Domain** | https://$CUSTOM_DOMAIN |"
-            fi
+            echo "| **Custom Domain** | https://${CF_PAGES_CUSTOM_DOMAIN:-Unavailable} |"
+            echo "| **Deployed as branch** | ${CF_PAGES_PRODUCTION_BRANCH:-Unavailable} (production) |"
             echo "| **API** | /api/* same-origin Pages Function |"
-            echo "| **Branch** | ${{ github.ref_name }} |"
+            echo "| **Source branch** | ${{ github.ref_name }} |"
             echo "| **Commit** | ${{ github.sha }} |"
             echo "| **Actor** | ${{ github.actor }} |"
             echo "| **Status** | $STATUS |"
