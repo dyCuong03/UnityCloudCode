@@ -210,21 +210,43 @@ Use the URL returned by the `deploy-adminweb.yml` Cloudflare Pages deploy step.
 
 ### One-time Cloudflare setup
 
-1. Run: `wrangler pages project create adminweb`
-   (or create the project in the Cloudflare dashboard under **Workers & Pages**).
-2. Set the production branch to `staging` in the Cloudflare dashboard.
-3. Ensure `CLOUDFLARE_API_TOKEN` has **Pages:Edit** permission.
-4. Set the required GitHub repo secrets. The workflow syncs UGS secrets into
-   Cloudflare Pages before each deploy.
-5. If the Cloudflare account has multiple Pages projects, set repo variable
-   `CLOUDFLARE_PAGES_PROJECT` to the existing project name, e.g. `adminweb-fza`.
+1. Create the Pages project (dashboard **Workers & Pages**, or it is created
+   on first deploy).
+2. Ensure `CLOUDFLARE_API_TOKEN` has **Pages:Edit** permission.
+3. Set the required GitHub repo secrets. The workflow syncs UGS secrets into
+   Cloudflare Pages (production **and** preview) before each deploy.
+4. Set the required GitHub repo **variables** (these are validated; the deploy
+   fails early if missing or unexpected, and never auto-selects another project):
+
+   | Variable | Value |
+   |---|---|
+   | `CLOUDFLARE_PAGES_PROJECT` | `adminweb-fza` |
+   | `CLOUDFLARE_PAGES_CUSTOM_DOMAIN` | `global-mails.buzzle.dev` |
+   | `CLOUDFLARE_PAGES_PRODUCTION_BRANCH` *(optional)* | defaults to `staging` |
+
+The production branch no longer needs manual dashboard setup: the workflow
+reconciles it via the Cloudflare API on every run, so the custom domain always
+serves the newest build.
+
+### Production promotion model
+
+The custom domain (`global-mails.buzzle.dev`) only serves the Pages **production**
+deployment — the latest deployment whose Wrangler `--branch` equals the project's
+production branch. The workflow therefore **always** deploys with
+`--branch=<production branch>` (default `staging`) instead of the raw source
+branch, so both `staging` and `release/**` pushes promote to the custom domain.
+The real source branch and commit SHA are preserved in the deployment metadata
+and job summary.
 
 ### Deploy trigger
 
 | Event | Condition |
 |---|---|
-| `push` to `staging` or `release/*` | Only when `AdminWeb/**` or the workflow file changes |
+| `push` to `staging` or `release/**` | Every push (no path filter) |
 | `workflow_dispatch` | Manual trigger from the Actions tab |
+
+All deploys serialize through one global production concurrency group so
+`staging` and `release/**` runs cannot race.
 
 Workflow file: `.github/workflows/deploy-adminweb.yml`
 
