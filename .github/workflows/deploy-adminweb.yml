@@ -77,10 +77,19 @@ jobs:
         working-directory: AdminWeb
         run: npm ci
 
+      # Bake connection config into the SPA bundle so operators never type the
+      # project id / operator id in the browser. None of these are secret (the
+      # project id and env names appear in Cloud Code URLs); the only real
+      # secret, the proxy access token, is still entered by hand at runtime.
+      #   Repo variable (optional): ADMINWEB_OPERATOR_ID — hides the operator field.
       - name: Build SPA
         working-directory: AdminWeb
         env:
           VITE_BASE: /
+          VITE_PROJECT_ID: ${{ vars.UNITY_PROJECT_ID }}
+          VITE_OPERATOR_ID: ${{ vars.ADMINWEB_OPERATOR_ID }}
+          VITE_ENV_TESTING: ${{ secrets.UNITY_ENVIRONMENT }}
+          VITE_ENV_PRODUCTION: ${{ secrets.UNITY_ENVIRONMENT_PRODUCTION }}
         run: npm run build
 
       # ------------------------------------------------------------------
