@@ -47,6 +47,14 @@ import type { ManageTabHandle } from './modules/mail-list'
 import type { ComboboxOption } from './modules/asset-selector'
 import { mountSendForm } from './modules/send-form'
 import type { SendFormHandle, SendFormPayload } from './modules/send-form'
+import {
+  BUILD_CONFIG,
+  hasBakedProjectId,
+  hasBakedOperatorId,
+  environmentOptions,
+  defaultEnvValue,
+  resolveEnvValue,
+} from './modules/app-config'
 
 // ─── Constants ────────────────────────────────────────────────────────────────────
 
@@ -324,23 +332,30 @@ function renderSidebar(): string {
 
   <div class="card">
     <div class="card-title">🔑 Connection</div>
-    <div class="form-group">
+    ${hasBakedProjectId
+      ? ''
+      : `<div class="form-group">
       <label>Module Name</label>
       <input type="text" id="c-module" value="${esc(state.connection.moduleName)}" placeholder="BackpackAdventuresModule" autocomplete="off" />
     </div>
     <div class="form-group">
       <label>Project ID</label>
       <input type="text" id="c-project-id" value="${esc(state.connection.projectId)}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off" />
-    </div>
+    </div>`}
     <div class="form-group">
-      <label>Environment (name or UUID)</label>
-      <input type="text" id="c-env" value="${esc(state.connection.environment)}" placeholder="production / testing / UUID" autocomplete="off" />
-      <small style="color:var(--text-dim);font-size:11px">The proxy resolves names to UUIDs — no browser API call needed</small>
+      <label>Environment</label>
+      <select id="c-env" autocomplete="off">
+        ${environmentOptions().map(o =>
+          `<option value="${esc(o.value)}"${o.value === state.connection.environment ? ' selected' : ''}>${esc(o.label)}</option>`,
+        ).join('')}
+      </select>
     </div>
-    <div class="form-group">
+    ${hasBakedOperatorId
+      ? ''
+      : `<div class="form-group">
       <label>Operator ID (email)</label>
       <input type="text" id="c-operator" value="${esc(state.connection.operatorId)}" placeholder="admin@example.com" autocomplete="off" />
-    </div>
+    </div>`}
     <div class="form-group">
       <label>Proxy Access Token <span style="color:var(--accent)">★ session-only</span></label>
       <input type="password" id="c-token" value="" placeholder="Proxy bearer token (not stored)" autocomplete="new-password" />
@@ -481,14 +496,22 @@ async function run(action: () => Promise<void>) {
 // ─── Actions ──────────────────────────────────────────────────────────────────────
 
 async function doConnect() {
-  const moduleName  = val('c-module').trim()   || 'BackpackAdventuresModule'
-  const projectId   = val('c-project-id').trim()
-  const environment = val('c-env').trim()
-  const operatorId  = val('c-operator').trim()
+  // Baked fields (project id / operator id / module name) come from the build
+  // config; only fields still rendered in the form are read from inputs.
+  const moduleName  = hasBakedProjectId  ? BUILD_CONFIG.moduleName  : (val('c-module').trim() || BUILD_CONFIG.moduleName)
+  const projectId   = hasBakedProjectId  ? BUILD_CONFIG.projectId   : val('c-project-id').trim()
+  const operatorId  = hasBakedOperatorId ? BUILD_CONFIG.operatorId  : val('c-operator').trim()
+  const environment = val('c-env').trim() || defaultEnvValue()
   const proxyToken  = (document.getElementById('c-token') as HTMLInputElement | null)?.value ?? ''
 
   if (!projectId || !environment || !operatorId || !proxyToken) {
-    setStatus('Project ID, Environment, Operator ID, and Proxy Token are required.', 'error')
+    const missing = [
+      !projectId   && 'Project ID',
+      !environment && 'Environment',
+      !operatorId  && 'Operator ID',
+      !proxyToken  && 'Proxy Token',
+    ].filter(Boolean).join(', ')
+    setStatus(`${missing} ${missing.includes(',') ? 'are' : 'is'} required.`, 'error')
     refreshSidebar()
     return
   }
@@ -511,10 +534,10 @@ async function doConnect() {
 
 async function doLogout() {
   clearAllCredentials()
-  state.connection.projectId   = ''
-  state.connection.environment = ''
-  state.connection.moduleName  = 'BackpackAdventuresModule'
-  state.connection.operatorId  = ''
+  state.connection.projectId   = BUILD_CONFIG.projectId
+  state.connection.environment = defaultEnvValue()
+  state.connection.moduleName  = BUILD_CONFIG.moduleName
+  state.connection.operatorId  = BUILD_CONFIG.operatorId
   state.connection.proxyToken  = ''    // cleared from memory
   setStatus('Logged out — all credentials cleared.', 'info')
   renderApp()
@@ -617,10 +640,11 @@ async function doCopyMailAsJson(mailIdValue: string, source: 'global' | 'user') 
 
 function init() {
   const saved = loadCredentials()
-  state.connection.projectId   = saved.projectId
-  state.connection.environment = saved.environment
-  state.connection.moduleName  = saved.moduleName || 'BackpackAdventuresModule'
-  state.connection.operatorId  = saved.operatorId
+  // Baked build config wins over session storage for the fields it provides.
+  state.connection.projectId   = hasBakedProjectId  ? BUILD_CONFIG.projectId  : saved.projectId
+  state.connection.operatorId  = hasBakedOperatorId ? BUILD_CONFIG.operatorId : saved.operatorId
+  state.connection.moduleName  = BUILD_CONFIG.moduleName
+  state.connection.environment = resolveEnvValue(saved.environment)
   // proxyToken always starts empty — operator must re-enter each session
   renderApp()
 }

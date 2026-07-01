@@ -325,12 +325,23 @@ body.drawer-open, body.body-noscroll { overflow: hidden; }
 /* ── Attachment compact list (attachment-list.ts) ────────────────────────────── */
 .att-list-add-row { margin-bottom: 8px; }
 
-.att-list-table { display: flex; flex-direction: column; gap: 4px; }
+/* Own container so the responsive column drops fire wherever the list is
+   mounted (mail drawer, send form, attachment modal) — keyed to the list's
+   OWN width, not an ancestor's. Fixes action buttons overflowing in the
+   send form, which is not inside the drawer-body container. */
+.att-list-table {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  container-type: inline-size;
+  container-name: att-list;
+}
 
 .att-list-row {
   display: grid;
   grid-template-columns: 80px 1fr 100px 40px 50px 22px auto;
   gap: 6px;
+  min-width: 0;
   align-items: center;
   background: #0d1b2a;
   border: 1px solid var(--border);
@@ -345,24 +356,31 @@ body.drawer-open, body.body-noscroll { overflow: hidden; }
 .att-list-row-invalid { border-left: 3px solid var(--error); }
 
 .att-list-type   { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
-.att-list-name   { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-.att-list-id     { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);
+/* min-width:0 lets the grid track shrink below the text's min-content so the
+   ellipsis engages instead of forcing the row wider — otherwise a long asset
+   name/id pushes the action buttons off the right edge. */
+.att-list-name   { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.att-list-id     { min-width: 0; font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);
                    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .att-list-amount { white-space: nowrap; font-size: 12px; }
 .att-list-chance { white-space: nowrap; font-size: 12px; color: var(--text-dim); }
 .att-list-invalid { color: var(--warning); font-size: 13px; cursor: pointer; }
-.att-list-invalid[hidden] { display: none; }
+/* Keep the cell occupying its grid track when valid — display:none would drop
+   it, leaving 6 items in a 7-track grid so the action buttons slide into the
+   wrong (22px) column and overflow to the right. */
+.att-list-invalid[hidden] { visibility: hidden; display: inline; }
 .att-list-actions { display: flex; gap: 4px; flex-shrink: 0; }
 
 .att-list-empty { font-size: 12px; color: var(--text-dim); padding: 8px 0; }
 
-@container drawer-body (max-width: 599px) {
+@container att-list (max-width: 520px) {
   .att-list-row { grid-template-columns: 70px 1fr 40px 50px 22px auto; }
   .att-list-id  { display: none; }
 }
-@container drawer-body (max-width: 399px) {
+@container att-list (max-width: 360px) {
   .att-list-row { grid-template-columns: 1fr auto; }
-  .att-list-type, .att-list-id, .att-list-amount { display: none; }
+  .att-list-type, .att-list-id, .att-list-amount, .att-list-chance,
+  .att-list-invalid, .att-list-invalid[hidden] { display: none; }
 }
 
 /* ── Modal shell (modal-shell.ts) ────────────────────────────────────────────── */
@@ -376,6 +394,9 @@ body.drawer-open, body.body-noscroll { overflow: hidden; }
   border-radius: 8px;
   background: var(--surface);
   color:      var(--text);
+  /* Restore the UA `dialog:modal` centering that the global `* { margin: 0 }`
+     reset (see top of file) strips — without this the dialog pins to top-left. */
+  margin:     auto;
   /* CRITICAL: NO transform/filter/will-change/opacity — must NOT create stacking context */
   overflow:   visible;
 }
@@ -453,6 +474,8 @@ body.drawer-open, body.body-noscroll { overflow: hidden; }
   border:        1px solid var(--border);
   background:    var(--surface);
   color:         var(--text);
+  /* Restore UA centering stripped by the global `* { margin: 0 }` reset. */
+  margin:        auto;
 }
 .confirm-dialog::backdrop { background: rgba(0,0,0,0.4); }
 .confirm-dialog-title   { font-weight: 600; margin-bottom: 8px; font-size: 15px; }
