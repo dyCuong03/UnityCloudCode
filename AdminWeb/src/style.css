@@ -356,8 +356,11 @@ body.drawer-open, body.body-noscroll { overflow: hidden; }
 .att-list-row-invalid { border-left: 3px solid var(--error); }
 
 .att-list-type   { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
-.att-list-name   { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-.att-list-id     { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);
+/* min-width:0 lets the grid track shrink below the text's min-content so the
+   ellipsis engages instead of forcing the row wider — otherwise a long asset
+   name/id pushes the action buttons off the right edge. */
+.att-list-name   { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.att-list-id     { min-width: 0; font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);
                    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .att-list-amount { white-space: nowrap; font-size: 12px; }
 .att-list-chance { white-space: nowrap; font-size: 12px; color: var(--text-dim); }
