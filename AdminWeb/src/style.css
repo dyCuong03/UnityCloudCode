@@ -365,7 +365,10 @@ body.drawer-open, body.body-noscroll { overflow: hidden; }
 .att-list-amount { white-space: nowrap; font-size: 12px; }
 .att-list-chance { white-space: nowrap; font-size: 12px; color: var(--text-dim); }
 .att-list-invalid { color: var(--warning); font-size: 13px; cursor: pointer; }
-.att-list-invalid[hidden] { display: none; }
+/* Keep the cell occupying its grid track when valid — display:none would drop
+   it, leaving 6 items in a 7-track grid so the action buttons slide into the
+   wrong (22px) column and overflow to the right. */
+.att-list-invalid[hidden] { visibility: hidden; display: inline; }
 .att-list-actions { display: flex; gap: 4px; flex-shrink: 0; }
 
 .att-list-empty { font-size: 12px; color: var(--text-dim); padding: 8px 0; }
@@ -376,7 +379,8 @@ body.drawer-open, body.body-noscroll { overflow: hidden; }
 }
 @container att-list (max-width: 360px) {
   .att-list-row { grid-template-columns: 1fr auto; }
-  .att-list-type, .att-list-id, .att-list-amount { display: none; }
+  .att-list-type, .att-list-id, .att-list-amount, .att-list-chance,
+  .att-list-invalid, .att-list-invalid[hidden] { display: none; }
 }
 
 /* ── Modal shell (modal-shell.ts) ────────────────────────────────────────────── */
