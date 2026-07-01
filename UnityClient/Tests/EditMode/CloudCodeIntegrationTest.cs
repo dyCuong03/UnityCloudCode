@@ -24,6 +24,7 @@ namespace BackpackAdventures.CloudCode.Client
             {
                 await BackpackCloudCodeService.InitializeAsync();
                 Debug.Log("[CloudCodeIntegrationTest] Signed in as: " + AuthenticationService.Instance.PlayerId);
+                Debug.Log("[CloudCodeIntegrationTest] UGS Project ID: " + Application.cloudProjectId);
             }
             catch (Exception ex)
             {
