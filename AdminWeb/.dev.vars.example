@@ -1,0 +1,18 @@
+# Cloudflare Pages Functions local secrets — template.
+#
+# Copy to `.dev.vars` (gitignored) and fill real values, then run:
+#   npm run dev:full     # build SPA + serve /api Pages Functions on :8788
+#
+# These are the SAME values the CI syncs to Cloudflare Pages secrets
+# (see .github/workflows/deploy-adminweb.yml → "Sync Pages secrets").
+# `vite dev` (:5173) does NOT run the Functions, so the /api proxy — and any
+# real Cloud Code call — only works through `wrangler pages dev`.
+
+# Gate token the SPA presents as `Authorization: Bearer <token>`.
+# In the browser, enter this SAME value in the "Proxy Access Token" field.
+# A mismatch is the 401 {"error":"Unauthorized"}.
+ADMIN_PROXY_TOKEN=replace-with-proxy-token
+
+# UGS project-scoped service account (server-side only, never in the browser).
+UNITY_PROJECT_SERVICE_ACCOUNT_KEY=replace-with-sa-key-id
+UNITY_PROJECT_SERVICE_ACCOUNT_SECRET=replace-with-sa-secret

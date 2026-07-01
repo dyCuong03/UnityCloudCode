@@ -8,7 +8,9 @@
     "gen:ids": "node scripts/gen-payout-ids.mjs",
     "build": "npm run gen:ids && tsc && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "dev:api": "npx wrangler@3.65.0 pages dev dist --port 8788",
+    "dev:full": "npm run build && npx wrangler@3.65.0 pages dev dist --port 8788"
   },
   "devDependencies": {
     "happy-dom": "^13.10.1",

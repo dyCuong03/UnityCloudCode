@@ -13,8 +13,10 @@
 
 const env = import.meta.env
 
+// Treat missing AND empty ('' — e.g. an unset GitHub Actions variable that
+// still expands to an empty string) as "use the fallback".
 function pick(value: string | undefined, fallback = ''): string {
-  return (value ?? fallback).trim()
+  return (value ?? '').trim() || fallback
 }
 
 export interface BuildConfig {
