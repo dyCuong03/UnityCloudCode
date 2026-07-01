@@ -86,7 +86,7 @@ jobs:
         working-directory: AdminWeb
         env:
           VITE_BASE: /
-          VITE_PROJECT_ID: ${{ secrets.UNITY_PROJECT_ID }}
+          VITE_PROJECT_ID: ${{ vars.UNITY_PROJECT_ID }}
           VITE_OPERATOR_ID: ${{ vars.ADMINWEB_OPERATOR_ID }}
           VITE_ENV_TESTING: ${{ secrets.UNITY_ENVIRONMENT }}
           VITE_ENV_PRODUCTION: ${{ secrets.UNITY_ENVIRONMENT_PRODUCTION }}
